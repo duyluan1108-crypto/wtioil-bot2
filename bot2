@@ -1,0 +1,130 @@
+import requests
+import json
+from datetime import datetime, timezone, timedelta
+from openpyxl import Workbook, load_workbook
+import os
+
+# ====================== CẤU HÌNH ======================
+EXCEL_FILE = "oil_data.xlsx"
+VN_TZ = timezone(timedelta(hours=7))
+
+# ====================== CÁC SÀN ======================
+
+def get_hyperliquid():
+    try:
+        url = "https://api.hyperliquid.xyz/info"
+        payload = {"type": "metaAndAssetCtxs", "dex": "xyz"}
+        r = requests.post(url, json=payload, timeout=10)
+        data = r.json()
+        universe = data[0]["universe"]
+        ctxs = data[1]
+        for i, coin in enumerate(universe):
+            if coin["name"] == "xyz:CL":
+                ctx = ctxs[i]
+                return {
+                    "exchange": "Hyperliquid",
+                    "pair": "xyz:CL (WTIOIL)",
+                    "mark": float(ctx["markPx"]),
+                    "index": float(ctx.get("oraclePx", 0)),
+                    "funding": float(ctx["funding"]),          # hourly
+                    "oi": float(ctx.get("openInterest", 0))
+                }
+    except Exception as e:
+        return {"exchange": "Hyperliquid", "error": str(e)}
+    return {"exchange": "Hyperliquid", "error": "Not found"}
+
+
+def get_vest():
+    try:
+        url = "https://server-prod.hz.vestmarkets.com/v2/ticker/latest?symbols=CL-PERP"
+        r = requests.get(url, timeout=10)
+        data = r.json()
+        t = data["tickers"][0]
+        return {
+            "exchange": "Vest",
+            "pair": "CL-PERP",
+            "mark": float(t["markPrice"]),
+            "index": float(t["indexPrice"]),
+            "funding": float(t["oneHrFundingRate"]),   # hourly
+            "oi": None
+        }
+    except Exception as e:
+        return {"exchange": "Vest", "error": str(e)}
+
+
+def get_binance():
+    try:
+        # Mark + Index + Funding
+        url = "https://fapi.binance.com/fapi/v1/premiumIndex?symbol=CLUSDT"
+        r = requests.get(url, timeout=10)
+        d = r.json()
+        
+        # Open Interest
+        oi_url = "https://fapi.binance.com/fapi/v1/openInterest?symbol=CLUSDT"
+        oi = requests.get(oi_url, timeout=10).json()
+        
+        return {
+            "exchange": "Binance",
+            "pair": "CLUSDT",
+            "mark": float(d["markPrice"]),
+            "index": float(d["indexPrice"]),
+            "funding": float(d["lastFundingRate"]),   # 8h rate
+            "oi": float(oi["openInterest"])
+        }
+    except Exception as e:
+        return {"exchange": "Binance", "error": str(e)}
+
+
+# ====================== GHI EXCEL ======================
+
+def save_to_excel(rows):
+    now = datetime.now(VN_TZ).strftime("%Y-%m-%d %H:%M:%S")
+    
+    if os.path.exists(EXCEL_FILE):
+        wb = load_workbook(EXCEL_FILE)
+        ws = wb.active
+    else:
+        wb = Workbook()
+        ws = wb.active
+        ws.append(["Thời gian (VN)", "Sàn", "Cặp", "Mark Price", "Index Price", "Funding", "Open Interest", "Ghi chú"])
+    
+    for r in rows:
+        if "error" in r:
+            ws.append([now, r["exchange"], "", "", "", "", "", r["error"]])
+        else:
+            funding_str = f"{r['funding']*100:.6f}%" if r.get("funding") is not None else ""
+            oi_str = f"{r['oi']:,.0f}" if r.get("oi") is not None else ""
+            ws.append([
+                now,
+                r["exchange"],
+                r["pair"],
+                r.get("mark"),
+                r.get("index"),
+                funding_str,
+                oi_str,
+                ""
+            ])
+    
+    wb.save(EXCEL_FILE)
+    print(f"✅ Đã lưu vào {EXCEL_FILE}")
+
+
+# ====================== MAIN ======================
+
+def main():
+    print("Đang lấy dữ liệu...")
+    
+    results = []
+    results.append(get_hyperliquid())
+    results.append(get_vest())
+    results.append(get_binance())
+    
+    # In ra màn hình
+    for r in results:
+        print(r)
+    
+    save_to_excel(results)
+    print("Xong!")
+
+if __name__ == "__main__":
+    main()
